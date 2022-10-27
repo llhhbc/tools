@@ -15,6 +15,8 @@ import (
 	"fmt"
 	"go/types"
 	"os"
+	"path"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -36,6 +38,7 @@ type application struct {
 	Mode       string          `flag:"mode" help:"mode (one of files, imports, types, syntax, allsyntax)"`
 	Private    bool            `flag:"private" help:"show non-exported declarations too"`
 	PrintJSON  bool            `flag:"json" help:"print package in JSON form"`
+	PrintGraph bool            `flag:"graph" help:"print package in graph mode"`
 	BuildFlags stringListValue `flag:"buildflag" help:"pass argument to underlying build system (may be repeated)"`
 }
 
@@ -79,7 +82,7 @@ func (app *application) Run(ctx context.Context, args ...string) error {
 	case "files":
 		cfg.Mode = packages.LoadFiles
 	case "imports":
-		cfg.Mode = packages.LoadImports
+		cfg.Mode = packages.NeedName | packages.NeedImports
 	case "types":
 		cfg.Mode = packages.LoadTypes
 	case "syntax":
@@ -106,9 +109,16 @@ func (app *application) Run(ctx context.Context, args ...string) error {
 			if !seen[lpkg] {
 				seen[lpkg] = true
 
+				if IsStandPkg(lpkg.PkgPath) {
+					return
+				}
+
 				// visit imports
 				var importPaths []string
 				for path := range lpkg.Imports {
+					if IsStandPkg(lpkg.Imports[path].PkgPath) {
+						continue
+					}
 					importPaths = append(importPaths, path)
 				}
 				sort.Strings(importPaths) // for determinism
@@ -131,10 +141,39 @@ func (app *application) Run(ctx context.Context, args ...string) error {
 	return nil
 }
 
+func IsStandPkg(name string) bool {
+	_, err := os.Stat(path.Join(runtime.GOROOT(), "src", name))
+	//fmt.Println("check ", path.Join(runtime.GOROOT(), "src", name), err)
+	if err == nil {
+		return true
+	}
+	return false
+}
+
+var seen1 = make(map[*packages.Package]bool)
+
+func (app *application) printGraph(lpkg *packages.Package) {
+	for _, n := range lpkg.Imports {
+		if IsStandPkg(n.PkgPath) {
+			continue
+		}
+		if seen1[n] {
+			continue
+		}
+		seen1[n] = true
+		fmt.Println(lpkg.PkgPath, " ", n.PkgPath)
+		app.printGraph(n)
+	}
+}
+
 func (app *application) print(lpkg *packages.Package) {
 	if app.PrintJSON {
 		data, _ := json.MarshalIndent(lpkg, "", "\t")
 		os.Stdout.Write(data)
+		return
+	}
+	if app.PrintGraph {
+		app.printGraph(lpkg)
 		return
 	}
 	// title
